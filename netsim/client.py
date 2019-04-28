@@ -5,7 +5,24 @@ from Crypto.Hash import SHA256
 from Crypto.Cipher import AES, PKCS1_OAEP
 from Crypto.Util import Counter
 from Crypto import Random
-import struct
+from Crypto.Protocol.KDF import PBKDF2
+
+def get_salt(address):
+	salt_doc = open("./client_data/" + address + "/salt.txt", 'rb')
+	return salt_doc.read()
+
+def update_salt(address, password):
+	salt = Random.get_random_bytes(16)
+
+	saltDoc = open('./client_data/' + address + '/salt.txt', 'wb')
+	saltDoc.write(salt)
+
+	pass_based_key = PBKDF2(password, salt, 16, 1000)
+
+	#This needs to be encrypted once that function is written
+	packet = address.encode('utf-8') + "logout".encode('utf-8') + pass_based_key
+	return packet
+
 
 NET_PATH = './network/'
 OWN_ADDR = 'B'
@@ -15,6 +32,7 @@ PASSWORD = ""
 # main program
 # ------------
 
+#Get and set arguments
 try:
 	opts, args = getopt.getopt(sys.argv[1:], shortopts='hp:a:l:', longopts=['help', 'path=', 'addr=', 'pass='])
 except getopt.GetoptError:
@@ -49,11 +67,10 @@ if OWN_ADDR not in network_interface.addr_space:
 netif = network_interface(NET_PATH, OWN_ADDR)
 
 #Password based key exchange protocol
-h = SHA256.new()
-h.update('hello'.encode('utf-8'))
-hashed_pass = h.digest()
+salt = get_salt(OWN_ADDR)
+pass_based_key = PBKDF2(PASSWORD, salt, 16, 1000)
 
-print(hashed_pass)
+open("./server_data/" + OWN_ADDR + "/password_derived_hash.txt", 'wb').write(pass_based_key)
 
 key = RSA.generate(2048)
 private_key = key.export_key()
@@ -71,30 +88,38 @@ if random_num < 128:
 nonce = Random.get_random_bytes(8)
 ctr = Counter.new(64, prefix=nonce, initial_value=0)
 
-cipher_aes = AES.new(hashed_pass, AES.MODE_CTR, counter = ctr)
-
-print(exponent)
+cipher_aes = AES.new(pass_based_key, AES.MODE_CTR, counter = ctr)
 
 ciphertext = cipher_aes.encrypt(exponent.to_bytes(66000, byteorder='big'))
 
-cipher_aes2 = AES.new(hashed_pass, AES.MODE_CTR, counter = ctr)
+packet = OWN_ADDR.encode('utf-8') + cipher_aes.nonce + modulus.to_bytes(2048, byteorder='big') + ciphertext
 
-packet1 = cipher_aes.nonce + ciphertext
-packet2 = modulus.to_bytes(2048, byteorder='big')
+print(len(modulus.to_bytes(2048, byteorder='big')))
 
-netif.send_msg('A', packet1)
-netif.send_msg('A', packet2)
+netif.send_msg('A', packet)
 
 status, msg = netif.receive_msg(blocking=True)
 
 cipher_rsa = PKCS1_OAEP.new(key)
 session_key = cipher_rsa.decrypt(msg)
-print(session_key)
 
+print('Session established with server...')
 
+while True:
 
+	command = input("Enter a command:")
 
-print('Main loop started...')
+	if command == "help" or command == "h":
+		print("ls              ... Lists remote files")
+		print("up <filename>   ... Uploads filename to remote server")
+		print("down <filename> ... Downloads filenmae from remote server")
+		print("rm <filename>   ... Deletes filename from remote server")
+		print("logout          ... Logs out from remote server")
+	elif command == "logout":
+		packet = update_salt(OWN_ADDR, PASSWORD)
+		netif.send_msg('A', packet)
+		print("Logging out...")
+		break
 #while True:
 # Calling receive_msg() in non-blocking mode ... 
 #	status, msg = netif.receive_msg(blocking=False)    

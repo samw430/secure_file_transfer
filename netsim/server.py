@@ -6,6 +6,51 @@ from Crypto.Cipher import AES, PKCS1_OAEP
 from Crypto.Util import Counter
 from Crypto import Random
 
+def initiate_session(msg):
+	user_id = msg[:1]
+	nonce = msg[1:9]
+	encrypted_e = msg[2057:]
+	modulus = int.from_bytes(msg[9:2057], byteorder='big')
+
+	#Get PBKDF2 key
+	pass_file = open("./server_data/" + user_id.decode('utf-8') + "/password_derived_hash.txt", 'rb')
+	pass_key = pass_file.read()
+	pass_file.close()
+
+	ctr = Counter.new(64, prefix=nonce, initial_value=0)
+	cipher_aes = AES.new(pass_key, AES.MODE_CTR, counter = ctr)
+
+	plaintext_e = cipher_aes.decrypt(encrypted_e)
+	exponent = int.from_bytes(plaintext_e, byteorder = 'big')
+
+	if exponent%2 ==0:
+		exponent = exponent-1
+
+	rsa = RSA.construct((modulus, exponent))
+
+	symettric_key = Random.get_random_bytes(16)
+
+	cipher = PKCS1_OAEP.new(rsa)
+	encrypted_key = cipher.encrypt(symettric_key)
+
+	netif.send_msg('B', encrypted_key)
+
+	print("Session initiated with " + user_id.decode('utf-8') + " with key:")
+	print(symettric_key)
+
+	return (True, symettric_key)
+
+def handle_request(msg):
+	header = msg[:7].decode('utf-8')
+
+	if header[1:] == "logout":
+		hash_file = open("./server_data/" + header[:1] + "/password_derived_hash.txt", 'wb')
+		hash_file.truncate()
+		hash_file.write(msg[7:])
+		hash_file.close()
+		return True
+
+
 NET_PATH = './network/'
 OWN_ADDR = 'A'
 
@@ -38,55 +83,20 @@ if OWN_ADDR not in network_interface.addr_space:
 
 # main loop
 netif = network_interface(NET_PATH, OWN_ADDR)
-print('Main loop started...')
+
+session_info = {}
+
+print('Server running...')
 while True:
 
-	status1, msg1 = netif.receive_msg(blocking=True)
-	status2, msg2 = netif.receive_msg(blocking=True)
+	status, msg = netif.receive_msg(blocking=True)
+	user_id = msg[:1]
 
-	nonce = msg1[:8]
-	encrypted_e = msg1[8:]
+	if user_id in session_info and session_info[user_id][0]:
+		#handle requests here
+		if handle_request(msg):
+			print("User " + user_id.decode('utf-8') + " logged out")
+			session_info[user_id] = (False, b'0')
+	else:
+		session_info[user_id] = initiate_session(msg)
 
-	print(encrypted_e)
-
-	h = SHA256.new()
-	h.update("hello".encode('utf-8'))
-	hashed_pass = h.digest()
-
-
-	ctr = Counter.new(64, prefix=nonce, initial_value=0)
-	print(hashed_pass)
-	cipher_aes = AES.new(hashed_pass, AES.MODE_CTR, counter = ctr)
-
-	plaintext_e = cipher_aes.decrypt(encrypted_e)
-	print("is me")
-	#print(plaintext_e)
-	exponent = int.from_bytes(plaintext_e, byteorder = 'big')
-
-	if exponent%2 ==0:
-		exponent = exponent-1
-
-	modulus = int.from_bytes(msg2, byteorder='big')
-
-	print(exponent)
-	rsa = RSA.construct((modulus, exponent))
-
-	symettric_key = Random.get_random_bytes(16)
-
-	cipher = PKCS1_OAEP.new(rsa)
-	encrypted_key = cipher.encrypt(symettric_key)
-
-	print(symettric_key)
-
-	netif.send_msg('B', encrypted_key)
-
-
-
-
-
-#	msg = input('Type a message: ')
-#	dst = input('Type a destination address: ')
-
-#	netif.send_msg(dst, msg.encode('utf-8'))
-
-#	if input('Continue? (y/n): ') == 'n': break
