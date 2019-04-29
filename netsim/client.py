@@ -70,8 +70,6 @@ netif = network_interface(NET_PATH, OWN_ADDR)
 salt = get_salt(OWN_ADDR)
 pass_based_key = PBKDF2(PASSWORD, salt, 16, 1000)
 
-open("./server_data/" + OWN_ADDR + "/password_derived_hash.txt", 'wb').write(pass_based_key)
-
 key = RSA.generate(2048)
 private_key = key.export_key()
 public_key = key.publickey().export_key()
