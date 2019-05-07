@@ -130,11 +130,12 @@ def encrypt(filename, command, statefile):
 
 	message = header + iv + encrypted + mac
 
-	# save state
+	#save state
 	state = "enckey: " + enckey.hex() + '\n'
 	state = state + "mackey: " + mackey.hex() + '\n'
-	state = state + "sndsqn: " + str(sndsqn + 1) + '\n'
+	state = state + "sndsqn: " + str(sndsqn+1) + '\n'
 	state = state + "rcvsqn: " + str(rcvsqn)
+
 	ofile = open(statefile, 'wt')
 	ofile.write(state)
 	ofile.close()
@@ -144,7 +145,7 @@ def encrypt(filename, command, statefile):
 def decrypt(msg, netif):
 
 	# parse the message
-	header = msg[:6]                    # header is 9 bytes long
+	header = msg[:6]                    # header is 6 bytes long
 	iv = msg[6:22]      # iv is AES.block_size bytes long
 	encrypted = msg[22:-32] # encypted part
 	mac = msg[-32:]
@@ -217,6 +218,8 @@ def decrypt(msg, netif):
 		ofile.write(tempfile.encode('utf-8'))
 		ofile.close()
 		packet = encrypt(tempfile, 1, statefile)
+		#must increment sndsqn because otherwise it is reset to 1
+		sndsqn = sndsqn + 1
 		netif.send_msg(header_from.decode('utf-8'), packet)
 		os.remove(tempfile)
 
