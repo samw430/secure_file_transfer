@@ -1,11 +1,26 @@
 import os, sys, getopt, time
 from netinterface import network_interface
 from Crypto.PublicKey import RSA
-from Crypto.Hash import SHA256
+from Crypto.Hash import SHA256, HMAC
 from Crypto.Cipher import AES, PKCS1_OAEP
 from Crypto.Util import Counter, Padding
 from Crypto import Random
 from Crypto.Protocol.KDF import PBKDF2
+
+"""
+Action Codes:
+Login   0
+ls      1
+up      2
+down    3
+rm      4
+logout  5 
+
+Passwords:
+B hello
+C crypt
+"""
+
 
 def get_salt(address):
 	salt_doc = open("./client_data/" + address + "/salt.txt", 'rb')
@@ -17,16 +32,13 @@ def update_salt(address, password):
 	saltDoc = open('./client_data/' + address + '/salt.txt', 'wb')
 	saltDoc.write(salt)
 
-	pass_based_key = PBKDF2(password, salt, 16, 1000)
+	return PBKDF2(password, salt, 32, 1000)
+	 
 
-	#This needs to be encrypted once that function is written
-	packet = address.encode('utf-8') + "logout".encode('utf-8') + pass_based_key
-	return packet
-
-def encrypt(filename, command):
+def encrypt(filename, command, statefile, password):
 
 	# read the content of the state file
-	ifile = open(sndfile, 'rt')
+	ifile = open(statefile, 'rt')
 	line = ifile.readline()
 	enckey = line[len("enckey: "):len("enckey: ")+32]
 	enckey = bytes.fromhex(enckey)
@@ -36,32 +48,57 @@ def encrypt(filename, command):
 	line = ifile.readline()
 	sndsqn = line[len("sndsqn: "):]
 	sndsqn = int(sndsqn, base=10)
+	line = ifile.readline()
+	rcvsqn = line[len("rcvsqn: "):]
+	rcvsqn = int(rcvsqn, base=10)
 	ifile.close()
 
-	# read the content of the input file into payload
-	ifile = open(filename, 'rb')
-	payload = ifile.read()
-	ifile.close()
-
-	header_from = OWN_ADDR.encode('utf-8').to_bytes(1,byteorder='big')
+	header_from = OWN_ADDR.encode('utf-8')
 	header_type = command.to_bytes(1,byteorder='big')
 	header_sqn = (sndsqn + 1).to_bytes(4, byteorder='big')
 	header = header_from+header_type+ header_sqn
 
-	#filename will be first 50 bytes of encrypted
-	filename = filename.to_bytes(50,byteorder='big')
+	MAC = HMAC.new(mackey, digestmod=SHA256)
+	MAC.update(header)
+
+	encrypted = b''
+
 
 	iv = Random.get_random_bytes(AES.block_size)
 	cipher = AES.new(enckey, AES.MODE_CBC, iv)
-	#might be problem because filename is bytes
-	#maybe use:
-	#str(int.from_bytes(filename, byteorder='big'))
-	encrypted = ENC.encrypt(pad(filename+payload,AES.block_size))
 
-	MAC = HMAC.new(mackey, digestmod=SHA256)
-	MAC.update(header)
+	#List remote files
+	if command == 1:
+		encrypted = b''
+	#upload
+	elif command == 2:
+		# read the content of the input file into payload
+		try:
+			ifile = open(statefile[:-9] + filename, 'rb')
+			payload = ifile.read()
+			ifile.close()
+		except:
+			print("Invalid Filename")
+			return (False, "")
+
+		#filename will be first 50 bytes of encrypted
+		filename = filename.ljust(50).encode('utf-8')
+		#might be problem because filename is bytes
+		#maybe use:
+		#str(int.from_bytes(filename, byteorder='big'))
+		encrypted = cipher.encrypt(Padding.pad(filename+payload,AES.block_size))
+	#logout 
+	elif command == 5:
+		new_keys = update_salt(OWN_ADDR, password)
+
+		#might be problem because filename is bytes
+		#maybe use:
+		#str(int.from_bytes(filename, byteorder='big'))
+		encrypted = cipher.encrypt(Padding.pad(new_keys,AES.block_size)) 
+
 	MAC.update(iv)
 	MAC.update(encrypted)
+		
 	mac = MAC.digest()
 
 	message = header + iv +  encrypted + mac
@@ -69,14 +106,15 @@ def encrypt(filename, command):
 	# save state
 	state = "enckey: " + enckey.hex() + '\n'
 	state = state + "mackey: " + mackey.hex() + '\n'
-	state = state + "sndsqn: " + str(sndsqn + 1)
+	state = state + "sndsqn: " + str(sndsqn + 1) + '\n'
+	state = state + "rcvsqn: " + str(rcvsqn)
 	ofile = open(statefile, 'wt')
 	ofile.write(state)
 	ofile.close()
 
-	return message
+	return (True, message)
 
-def decrypt(msg):
+def decrypt(msg, statefile):
 
 	# parse the message
 	header = msg[:6]                    # header is 6 bytes long
@@ -88,8 +126,7 @@ def decrypt(msg):
 	header_sqn = header[2:6]            # msg sqn is encoded on 4 bytes
 
 	# read the content of the receive state file
-	recfile = header_from#need to encode this based on from
-	ifile = open(recfile, 'rt')
+	ifile = open(statefile, 'rt')
 	line = ifile.readline()
 	enckey = line[len("enckey: "):len("enckey: ")+32]
 	enckey = bytes.fromhex(enckey)
@@ -97,16 +134,20 @@ def decrypt(msg):
 	mackey = line[len("mackey: "):len("mackey: ")+32]
 	mackey = bytes.fromhex(mackey)
 	line = ifile.readline()
+	sndsqn = line[len("sndsqn: "):]
+	sndsqn = int(sndsqn, base=10)
+	line = ifile.readline()
 	rcvsqn = line[len("rcvsqn: "):]
 	rcvsqn = int(rcvsqn, base=10)
 	ifile.close()
 
 	# check the sequence number
-	sndsqn = int.from_bytes(header_sqn, byteorder='big')
-	if (sndsqn < (rcvsqn +1)):
-		#need to decide what we do here
-		#sys.exit(1)
-		terminate()
+	headersqn = int.from_bytes(header_sqn, byteorder='big')
+	if (rcvsqn > headersqn):
+		print("Bad sequence number")
+		print("rcvsqn", rcvsqn)
+		print("headersqn", headersqn)
+		return False
 
 	#verify mac
 	MAC = HMAC.new(mackey,digestmod=SHA256)
@@ -116,36 +157,108 @@ def decrypt(msg):
 	comp_mac = MAC.digest()
 
 	if(comp_mac !=mac):
-		#do something here
-		#sys.exit(1)
+		print("Bad MAC value")
+		return False
 
 	ENC = AES.new(enckey, AES.MODE_CBC, iv)
 	decrypted = ENC.decrypt(encrypted)
 
 	#remove and check padding
 	try:
-		decrypted = unpad(decrypted,AES.block_size)
+		decrypted = Padding.unpad(decrypted,AES.block_size)
 	except ValueError:
-		#need to decide what we do here
-		terminate()
+		print("Bad padding")
+		return False
 
-	filename = decrypted[:50]		#filename is first 50 bytes
-	payload = decrypted[50:]
+	#Decrypt ls packet
+	if header_type == b'\x01':
+		print(decrypted.decode('utf-8'))
+	else:
+		filename = decrypted[:50]		#filename is first 50 bytes
+		payload = decrypted[50:]
 
 	# save state
 	state = "enckey: " + enckey.hex() + '\n'
 	state = state + "mackey: " + mackey.hex() + '\n'
-	state = state + "rcvsqn: " + str(sndsqn)
+	state = state + "sndsqn: " + str(sndsqn) + '\n'
+	state = state + "rcvsqn: " + str(rcvsqn+1)
 	ofile = open(statefile, 'wt')
 	ofile.write(state)
 	ofile.close()
 
-	#do something based on the type of message
+	return True
+
+def initialize_session(OWN_ADDR, netif, PASSWORD, statefile):
+	#Password based key exchange protocol
+	salt = get_salt(OWN_ADDR)
+	pass_based_key = PBKDF2(PASSWORD, salt, 16, 1000)
+
+	#In testing if passwords get out of sync
+	open("./server_data/" + OWN_ADDR + "/password_derived_hash.txt", 'wb').write(pass_based_key)
+
+	key = RSA.generate(2048)
+	private_key = key.export_key()
+	public_key = key.publickey().export_key()
+
+	pubkey = RSA.importKey(public_key)
+
+	modulus = pubkey.n
+	exponent = pubkey.e
+
+	random_num = int.from_bytes(Random.get_random_bytes(1), byteorder = 'big')
+	if random_num < 128:
+		exponent = exponent+1
+
+	nonce = Random.get_random_bytes(8)
+	ctr = Counter.new(64, prefix=nonce, initial_value=0)
+
+	cipher_aes = AES.new(pass_based_key, AES.MODE_CTR, counter = ctr)
+
+	ciphertext = cipher_aes.encrypt(exponent.to_bytes(66000, byteorder='big'))
+
+	header_from = OWN_ADDR.encode('utf-8')
+	#need to decie on header type codes
+	zero = 0
+	header_type = zero.to_bytes(1,byteorder='big')
+	#first message should be zero?
+	header_sqn = zero.to_bytes(4, byteorder='big')
+	header = header_from+header_type+ header_sqn
+
+	packet = header + cipher_aes.nonce + modulus.to_bytes(2048, byteorder='big') + ciphertext
+	#old way
+	#packet = OWN_ADDR.encode('utf-8') + cipher_aes.nonce + modulus.to_bytes(2048, byteorder='big') + ciphertext
+
+	netif.send_msg('A', packet)
+
+	status, msg = netif.receive_msg(blocking=True)
+
+	# parse the message
+	header = msg[:6]                    # header is 6 bytes long
+	encrypted_keys = msg[6:]
+	header_from = header[:1]         # from is encoded on 1 byte
+	header_type = header[1:2]           # type is encoded on 1 byte
+	header_sqn = header[2:6]            # msg sqn is encoded on 4 bytes
+
+	cipher_rsa = PKCS1_OAEP.new(key)
+	session_keys = cipher_rsa.decrypt(encrypted_keys)
+
+	sndsqn = 0
+	rcvsqn = 0
+	state = "enckey: " + session_keys[:16].hex() + '\n'
+	state = state + "mackey: " + session_keys[16:].hex() + '\n'
+	state = state + "sndsqn: " + str(sndsqn + 1) + '\n'
+	state = state + "rcvsqn: " + str(rcvsqn + 1)
+	ofile = open(statefile, 'wt')
+	ofile.write(state)
+	ofile.close()
+
+	print('Session established with server...')
 
 
 NET_PATH = './network/'
 OWN_ADDR = 'B'
 PASSWORD = ""
+STATE_FILE = ""
 
 # ------------
 # main program
@@ -181,55 +294,13 @@ if OWN_ADDR not in network_interface.addr_space:
 	print('Error: Invalid address ' + OWN_ADDR)
 	sys.exit(1)
 
+STATE_FILE = "./client_data/" + OWN_ADDR + "/state.txt"
+
 
 #Initialize network
 netif = network_interface(NET_PATH, OWN_ADDR)
 
-#Password based key exchange protocol
-salt = get_salt(OWN_ADDR)
-pass_based_key = PBKDF2(PASSWORD, salt, 16, 1000)
-
-key = RSA.generate(2048)
-private_key = key.export_key()
-public_key = key.publickey().export_key()
-
-pubkey = RSA.importKey(public_key)
-
-modulus = pubkey.n
-exponent = pubkey.e
-
-random_num = int.from_bytes(Random.get_random_bytes(1), byteorder = 'big')
-if random_num < 128:
-	exponent = exponent+1
-
-nonce = Random.get_random_bytes(8)
-ctr = Counter.new(64, prefix=nonce, initial_value=0)
-
-cipher_aes = AES.new(pass_based_key, AES.MODE_CTR, counter = ctr)
-
-ciphertext = cipher_aes.encrypt(exponent.to_bytes(66000, byteorder='big'))
-
-header_from = OWN_ADDR.encode('utf-8').to_bytes(1, )
-#need to decie on header type codes
-header_type = 0.to_bytes(1,byteorder='big')
-#first message should be zero?
-header_sqn = 0.to_bytes(4, byteorder='big')
-header = header_from+header_type+ header_sqn
-
-packet = header + cipher_aes.nonce + modulus.to_bytes(2048, byteorder='big') + ciphertext
-#old way
-#packet = OWN_ADDR.encode('utf-8') + cipher_aes.nonce + modulus.to_bytes(2048, byteorder='big') + ciphertext
-
-print(len(modulus.to_bytes(2048, byteorder='big')))
-
-netif.send_msg('A', packet)
-
-status, msg = netif.receive_msg(blocking=True)
-
-cipher_rsa = PKCS1_OAEP.new(key)
-session_key = cipher_rsa.decrypt(msg)
-
-print('Session established with server...')
+initialize_session(OWN_ADDR, netif, PASSWORD, STATE_FILE)
 
 while True:
 
@@ -242,10 +313,23 @@ while True:
 		print("rm <filename>   ... Deletes filename from remote server")
 		print("logout          ... Logs out from remote server")
 	elif command == "logout":
-		packet = update_salt(OWN_ADDR, PASSWORD)
-		netif.send_msg('A', packet)
+		packet = encrypt("", 5, STATE_FILE, PASSWORD)
+		if packet[0]:
+			netif.send_msg('A', packet[1])
 		print("Logging out...")
 		break
+	elif command[:3] == "up ":
+		packet = encrypt(command[3:], 2, STATE_FILE, PASSWORD)
+		if packet[0]:
+			netif.send_msg('A', packet[1])
+			print("File " + command[3:] + " uploaded")
+	elif command == "ls":
+		packet = encrypt("", 1, STATE_FILE, PASSWORD)
+		if packet[0]:
+			netif.send_msg('A', packet[1])
+			print("Requesting list of remote files...")
+			status, msg = netif.receive_msg(blocking=True)
+			decrypt(msg, STATE_FILE)
 #while True:
 # Calling receive_msg() in non-blocking mode ...
 #	status, msg = netif.receive_msg(blocking=False)
