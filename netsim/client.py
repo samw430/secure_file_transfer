@@ -91,6 +91,11 @@ def encrypt(filename, command, statefile, password):
 	elif command == 3:
 		filename = filename.ljust(50).encode('utf-8')
 		encrypted = cipher.encrypt(Padding.pad(filename,AES.block_size))
+	#remove file
+	elif command == 4:
+		#filename will be first 50 bytes of encrypted
+		filename = filename.ljust(50).encode('utf-8')	
+		encrypted = cipher.encrypt(Padding.pad(filename,AES.block_size))
 	#logout 
 	elif command == 5:
 		new_keys = update_salt(OWN_ADDR, password)
@@ -176,7 +181,7 @@ def decrypt(msg, statefile):
 
 	#Decrypt ls packet
 	if header_type == b'\x01':
-		print(decrypted.decode('utf-8'))
+		print(decrypted[50:].decode('utf-8'))
 	#decrypt download packet
 	elif header_type == b'\x03':
 		filename = decrypted[:50]		#filename is first 50 bytes
@@ -341,6 +346,7 @@ while True:
 			print("Waiting for file...")
 			status, msg = netif.receive_msg(blocking=True)
 			decrypted = decrypt(msg, STATE_FILE)
+			print("File downloaded")
 	elif command == "ls":
 		packet = encrypt("", 1, STATE_FILE, PASSWORD)
 		if packet[0]:
@@ -348,6 +354,11 @@ while True:
 			print("Requesting list of remote files...")
 			status, msg = netif.receive_msg(blocking=True)
 			decrypt(msg, STATE_FILE)
+	elif command[:3] == "rm ":
+		packet = encrypt(command[3:], 4, STATE_FILE, PASSWORD)
+		if packet[0]:
+			netif.send_msg('A', packet[1])
+			print("File " + command[3:] + " deleted")
 #while True:
 # Calling receive_msg() in non-blocking mode ...
 #	status, msg = netif.receive_msg(blocking=False)

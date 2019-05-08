@@ -211,15 +211,15 @@ def decrypt(msg, netif):
 		hash_file.close()
 		print("User " + header_from.decode('utf-8') + " has logged out")
 		return False
+	#list files
 	elif header_type == b'\x01':
 		files = os.listdir("./server_data/" + header_from.decode('utf-8') + "/files/")
 		fileString = ""
 		for file in files:
 			fileString = fileString + str(file) + '\n'
 		tempfile = "./server_data/" + header_from.decode('utf-8') + "/files/lsTemp"
-
 		ofile = open(tempfile, "wb+")
-		ofile.write(tempfile.encode('utf-8'))
+		ofile.write(fileString.encode('utf-8'))
 		ofile.close()
 		packet = encrypt(tempfile, 1, statefile)
 		#must increment sndsqn because otherwise it is reset to 1
@@ -244,6 +244,11 @@ def decrypt(msg, netif):
 		sndsqn = sndsqn + 1
 		netif.send_msg(header_from.decode('utf-8'), packet)
 		print(header_from.decode('utf-8'), "requested", filename)
+	#remove file
+	elif header_type == b'\x04':
+		filename = decrypted[:50]		#filename is first 50 bytes
+		os.remove("./server_data/" + header_from.decode('utf-8') + "/files/" + filename.decode('utf-8'))
+		print(header_from.decode('utf-8'), "deleted", filename.decode('utf-8'))
 
 	# save state
 	state = "enckey: " + enckey.hex() + '\n'
