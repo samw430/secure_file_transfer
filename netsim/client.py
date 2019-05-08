@@ -87,6 +87,10 @@ def encrypt(filename, command, statefile, password):
 		#maybe use:
 		#str(int.from_bytes(filename, byteorder='big'))
 		encrypted = cipher.encrypt(Padding.pad(filename+payload,AES.block_size))
+	#download
+	elif command == 3:
+		filename = filename.ljust(50).encode('utf-8')
+		encrypted = cipher.encrypt(Padding.pad(filename,AES.block_size))
 	#logout 
 	elif command == 5:
 		new_keys = update_salt(OWN_ADDR, password)
@@ -173,9 +177,16 @@ def decrypt(msg, statefile):
 	#Decrypt ls packet
 	if header_type == b'\x01':
 		print(decrypted.decode('utf-8'))
-	else:
+	#decrypt download packet
+	elif header_type == b'\x03':
 		filename = decrypted[:50]		#filename is first 50 bytes
 		payload = decrypted[50:]
+
+		#make new file or possibly overwrite old file
+		f = open("./client_data/" + OWN_ADDR + "/" + filename.decode('utf-8'),"wb+")
+		f.write(payload)
+		f.close()
+
 
 	# save state
 	state = "enckey: " + enckey.hex() + '\n'
@@ -323,6 +334,13 @@ while True:
 		if packet[0]:
 			netif.send_msg('A', packet[1])
 			print("File " + command[3:] + " uploaded")
+	elif command[:5] == "down ":
+		packet = encrypt(command[5:], 3, STATE_FILE, PASSWORD)
+		if packet[0]:
+			netif.send_msg('A', packet[1])
+			print("Waiting for file...")
+			status, msg = netif.receive_msg(blocking=True)
+			decrypted = decrypt(msg, STATE_FILE)
 	elif command == "ls":
 		packet = encrypt("", 1, STATE_FILE, PASSWORD)
 		if packet[0]:

@@ -106,6 +106,10 @@ def encrypt(filename, command, statefile):
 	payload = ifile.read()
 	ifile.close()
 
+	#get shortened filename back if encrypting file
+	if command == 3:
+		filename = filename[22:]
+
 	server_address = "A"
 	header_from = server_address.encode('utf-8')
 	header_type = command.to_bytes(1,byteorder='big')
@@ -222,9 +226,8 @@ def decrypt(msg, netif):
 		sndsqn = sndsqn + 1
 		netif.send_msg(header_from.decode('utf-8'), packet)
 		os.remove(tempfile)
-
-	#do something based on the type of message
-	if header_type == b'\x02':
+	#upload
+	elif header_type == b'\x02':
 		filename = decrypted[:50]		#filename is first 50 bytes
 		payload = decrypted[50:]
 
@@ -232,6 +235,15 @@ def decrypt(msg, netif):
 		file.write(payload)
 		file.close()
 		print(header_from.decode('utf-8'), "uploaded", filename.decode('utf-8'))
+	#download
+	elif header_type == b'\x03':
+		filename = decrypted[:50]
+		filename = './server_data/' + header_from.decode('utf-8') + '/files/' + filename.decode('utf-8')
+		packet = encrypt(filename, 3, statefile)
+		#must increment sndsqn because otherwise it is reset to 1
+		sndsqn = sndsqn + 1
+		netif.send_msg(header_from.decode('utf-8'), packet)
+		print(header_from.decode('utf-8'), "requested", filename)
 
 	# save state
 	state = "enckey: " + enckey.hex() + '\n'
