@@ -7,6 +7,26 @@ from Crypto.Util import Counter, Padding
 from Crypto import Random
 import os
 
+def read_state_file(statefile):
+
+	# read the content of the state file
+	ifile = open(statefile, 'rt')
+	line = ifile.readline()
+	enckey = line[len("enckey: "):len("enckey: ")+32]
+	enckey = bytes.fromhex(enckey)
+	line = ifile.readline()
+	mackey = line[len("mackey: "):len("mackey: ")+32]
+	mackey = bytes.fromhex(mackey)
+	line = ifile.readline()
+	sndsqn = line[len("sndsqn: "):]
+	sndsqn = int(sndsqn, base=10)
+	line = ifile.readline()
+	rcvsqn = line[len("rcvsqn: "):]
+	rcvsqn = int(rcvsqn, base=10)
+	ifile.close()
+
+	return (enckey, mackey, sndsqn, rcvsqn)
+
 def initiate_session(msg):
 	#Potentially add a mac so get a longer key with PBKDF2
 
@@ -71,38 +91,30 @@ def initiate_session(msg):
 
 	print("Session initiated with " + header_from.decode('utf-8'))
 
-	return (True)
+	return True
 
-def handle_request(msg):
-	header = msg[:7].decode('utf-8')
+def download_error(filename, statefile, client_name):
+	tempfile = "./server_data/" + client_name + "/files/errorTemp"
+	ofile = open(tempfile, "wb+")
+	errorString = "The file " + filename[22:] + " does not exist"
+	ofile.write(errorString.encode('utf-8'))
+	ofile.close()
+	packet = encrypt(tempfile, 6, statefile, client_name)
+	os.remove(tempfile)	
 
-	if header[1:] == "logout":
-		hash_file = open("./server_data/" + header[:1] + "/password_derived_hash.txt", 'wb')
-		hash_file.truncate()
-		hash_file.write(msg[7:])
-		hash_file.close()
-		return True
+	return packet
 
-def encrypt(filename, command, statefile):
+def encrypt(filename, command, statefile, client_name):
 
 	# read the content of the state file
-	ifile = open(statefile, 'rt')
-	line = ifile.readline()
-	enckey = line[len("enckey: "):len("enckey: ")+32]
-	enckey = bytes.fromhex(enckey)
-	line = ifile.readline()
-	mackey = line[len("mackey: "):len("mackey: ")+32]
-	mackey = bytes.fromhex(mackey)
-	line = ifile.readline()
-	sndsqn = line[len("sndsqn: "):]
-	sndsqn = int(sndsqn, base=10)
-	line = ifile.readline()
-	rcvsqn = line[len("rcvsqn: "):]
-	rcvsqn = int(rcvsqn, base=10)
-	ifile.close()
+	enckey, mackey, sndsqn, rcvsqn = read_state_file(statefile)
 
 	# read the content of the input file into payload
-	ifile = open(filename, 'rb')
+	filename = filename.rstrip()
+	try:
+		ifile = open(filename, 'rb')
+	except FileNotFoundError:
+		return download_error(filename, statefile, client_name)
 	payload = ifile.read()
 	ifile.close()
 
@@ -158,21 +170,9 @@ def decrypt(msg, netif):
 	header_sqn = header[2:6]            # msg sqn is encoded on 4 bytes
 
 	# read the content of the receive state file
-	statefile = "./server_data/" + header_from.decode('utf-8') + "/state.txt"#need to encode this based on from
-	ifile = open(statefile, 'rt')
-	line = ifile.readline()
-	enckey = line[len("enckey: "):len("enckey: ")+32]
-	enckey = bytes.fromhex(enckey)
-	line = ifile.readline()
-	mackey = line[len("mackey: "):len("mackey: ")+32]
-	mackey = bytes.fromhex(mackey)
-	line = ifile.readline()
-	sndsqn = line[len("sndsqn: "):]
-	sndsqn = int(sndsqn, base=10)
-	line = ifile.readline()
-	rcvsqn = line[len("rcvsqn: "):]
-	rcvsqn = int(rcvsqn, base=10)
-	ifile.close()
+	statefile = "./server_data/" + header_from.decode('utf-8') + "/state.txt"
+	enckey, mackey, sndsqn, rcvsqn = read_state_file(statefile)
+
 
 	# check the sequence number
 	header_sqn = int.from_bytes(header_sqn, byteorder='big')
@@ -196,23 +196,15 @@ def decrypt(msg, netif):
 
 	#remove and check padding
 	if len(decrypted)>0:
+		print(len(decrypted))
 		try:
 			decrypted = Padding.unpad(decrypted,AES.block_size)
 		except ValueError:
 			#need to decide what we do here
 			return False
 
-	if header_type == b'\x05':
-		#Logout phase initiated
-		new_hash = decrypted
-		hash_file = open("./server_data/" + header_from.decode('utf-8') + "/password_derived_hash.txt", 'wb')
-		hash_file.truncate()
-		hash_file.write(new_hash)
-		hash_file.close()
-		print("User " + header_from.decode('utf-8') + " has logged out")
-		return False
 	#list files
-	elif header_type == b'\x01':
+	if header_type == b'\x01':
 		files = os.listdir("./server_data/" + header_from.decode('utf-8') + "/files/")
 		fileString = ""
 		for file in files:
@@ -221,34 +213,50 @@ def decrypt(msg, netif):
 		ofile = open(tempfile, "wb+")
 		ofile.write(fileString.encode('utf-8'))
 		ofile.close()
-		packet = encrypt(tempfile, 1, statefile)
+		packet = encrypt(tempfile, 1, statefile, "")
 		#must increment sndsqn because otherwise it is reset to 1
 		sndsqn = sndsqn + 1
 		netif.send_msg(header_from.decode('utf-8'), packet)
 		os.remove(tempfile)
+		print(header_from.decode('utf-8'), "listed files")
+
 	#upload
 	elif header_type == b'\x02':
 		filename = decrypted[:50]		#filename is first 50 bytes
 		payload = decrypted[50:]
 
-		file = open("./server_data/" + header_from.decode('utf-8') + "/files/" + filename.decode('utf-8'), "wb+")
+		file = open("./server_data/" + header_from.decode('utf-8') + "/files/" + filename.decode('utf-8').rstrip(), "wb+")
 		file.write(payload)
 		file.close()
 		print(header_from.decode('utf-8'), "uploaded", filename.decode('utf-8'))
 	#download
 	elif header_type == b'\x03':
 		filename = decrypted[:50]
-		filename = './server_data/' + header_from.decode('utf-8') + '/files/' + filename.decode('utf-8')
-		packet = encrypt(filename, 3, statefile)
+		filename = './server_data/' + header_from.decode('utf-8') + '/files/' + filename.decode('utf-8').rstrip()
+		packet = encrypt(filename, 3, statefile, header_from.decode('utf-8'))
 		#must increment sndsqn because otherwise it is reset to 1
 		sndsqn = sndsqn + 1
 		netif.send_msg(header_from.decode('utf-8'), packet)
 		print(header_from.decode('utf-8'), "requested", filename)
 	#remove file
 	elif header_type == b'\x04':
+		print("Here")
 		filename = decrypted[:50]		#filename is first 50 bytes
-		os.remove("./server_data/" + header_from.decode('utf-8') + "/files/" + filename.decode('utf-8'))
-		print(header_from.decode('utf-8'), "deleted", filename.decode('utf-8'))
+		try:
+			os.remove("./server_data/" + header_from.decode('utf-8') + "/files/" + filename.decode('utf-8').rstrip())
+			print(header_from.decode('utf-8'), "deleted", filename.decode('utf-8'))
+		except:
+			print("User",header_from.decode('utf-8'),"tried to delete a file that doesn't exist")
+	#logout
+	elif header_type == b'\x05':
+		#Logout phase initiated
+		new_hash = decrypted
+		hash_file = open("./server_data/" + header_from.decode('utf-8') + "/password_derived_hash.txt", 'wb')
+		hash_file.truncate()
+		hash_file.write(new_hash)
+		hash_file.close()
+		print("User " + header_from.decode('utf-8') + " has logged out")
+		return False
 
 	# save state
 	state = "enckey: " + enckey.hex() + '\n'

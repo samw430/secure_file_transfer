@@ -15,6 +15,7 @@ up      2
 down    3
 rm      4
 logout  5 
+error   6
 
 Passwords:
 B hello
@@ -33,9 +34,8 @@ def update_salt(address, password):
 	saltDoc.write(salt)
 
 	return PBKDF2(password, salt, 32, 1000)
-	 
 
-def encrypt(filename, command, statefile, password):
+def read_state_file(statefile):
 
 	# read the content of the state file
 	ifile = open(statefile, 'rt')
@@ -53,6 +53,12 @@ def encrypt(filename, command, statefile, password):
 	rcvsqn = int(rcvsqn, base=10)
 	ifile.close()
 
+	return (enckey, mackey, sndsqn, rcvsqn)
+
+def encrypt(filename, command, statefile, password):
+
+	enckey, mackey, sndsqn, rcvsqn = read_state_file(statefile)
+
 	header_from = OWN_ADDR.encode('utf-8')
 	header_type = command.to_bytes(1,byteorder='big')
 	header_sqn = (sndsqn + 1).to_bytes(4, byteorder='big')
@@ -60,6 +66,10 @@ def encrypt(filename, command, statefile, password):
 
 	MAC = HMAC.new(mackey, digestmod=SHA256)
 	MAC.update(header)
+
+	if len(filename) > 50:
+		print("Filenames can be at most 50 characters")
+		return (False,b'')
 
 	encrypted = b''
 
@@ -78,8 +88,8 @@ def encrypt(filename, command, statefile, password):
 			payload = ifile.read()
 			ifile.close()
 		except:
-			print("Invalid Filename")
-			return (False, "")
+			print("Filename doesn't exist locally")
+			return (False, b'')
 
 		#filename will be first 50 bytes of encrypted
 		filename = filename.ljust(50).encode('utf-8')
@@ -99,10 +109,6 @@ def encrypt(filename, command, statefile, password):
 	#logout 
 	elif command == 5:
 		new_keys = update_salt(OWN_ADDR, password)
-
-		#might be problem because filename is bytes
-		#maybe use:
-		#str(int.from_bytes(filename, byteorder='big'))
 		encrypted = cipher.encrypt(Padding.pad(new_keys,AES.block_size)) 
 
 	MAC.update(iv)
@@ -135,27 +141,12 @@ def decrypt(msg, statefile):
 	header_sqn = header[2:6]            # msg sqn is encoded on 4 bytes
 
 	# read the content of the receive state file
-	ifile = open(statefile, 'rt')
-	line = ifile.readline()
-	enckey = line[len("enckey: "):len("enckey: ")+32]
-	enckey = bytes.fromhex(enckey)
-	line = ifile.readline()
-	mackey = line[len("mackey: "):len("mackey: ")+32]
-	mackey = bytes.fromhex(mackey)
-	line = ifile.readline()
-	sndsqn = line[len("sndsqn: "):]
-	sndsqn = int(sndsqn, base=10)
-	line = ifile.readline()
-	rcvsqn = line[len("rcvsqn: "):]
-	rcvsqn = int(rcvsqn, base=10)
-	ifile.close()
+	enckey, mackey, sndsqn, rcvsqn = read_state_file(statefile)
 
 	# check the sequence number
 	headersqn = int.from_bytes(header_sqn, byteorder='big')
 	if (rcvsqn > headersqn):
 		print("Bad sequence number")
-		print("rcvsqn", rcvsqn)
-		print("headersqn", headersqn)
 		return False
 
 	#verify mac
@@ -188,10 +179,12 @@ def decrypt(msg, statefile):
 		payload = decrypted[50:]
 
 		#make new file or possibly overwrite old file
-		f = open("./client_data/" + OWN_ADDR + "/" + filename.decode('utf-8'),"wb+")
+		f = open("./client_data/" + OWN_ADDR + "/" + filename.decode('utf-8').rstrip(),"wb+")
 		f.write(payload)
 		f.close()
-
+		print("File Download")
+	elif header_type == b'\x06':
+		print(decrypted[50:].decode('utf-8'))
 
 	# save state
 	state = "enckey: " + enckey.hex() + '\n'
@@ -320,7 +313,7 @@ initialize_session(OWN_ADDR, netif, PASSWORD, STATE_FILE)
 
 while True:
 
-	command = input("Enter a command:")
+	command = input("Enter a command: ")
 
 	if command == "help" or command == "h":
 		print("ls              ... Lists remote files")
@@ -346,7 +339,6 @@ while True:
 			print("Waiting for file...")
 			status, msg = netif.receive_msg(blocking=True)
 			decrypted = decrypt(msg, STATE_FILE)
-			print("File downloaded")
 	elif command == "ls":
 		packet = encrypt("", 1, STATE_FILE, PASSWORD)
 		if packet[0]:
@@ -358,15 +350,4 @@ while True:
 		packet = encrypt(command[3:], 4, STATE_FILE, PASSWORD)
 		if packet[0]:
 			netif.send_msg('A', packet[1])
-			print("File " + command[3:] + " deleted")
-#while True:
-# Calling receive_msg() in non-blocking mode ...
-#	status, msg = netif.receive_msg(blocking=False)
-#	if status: print(msg)      # if status is True, then a message was returned in msg
-#	else: time.sleep(2)        # otherwise msg is empty
-
-# Calling receive_msg() in blocking mode ...
-
-
-#	status, msg = netif.receive_msg(blocking=True)      # when returns, status is True and msg contains a message
-#	print(msg.decode('utf-8'))
+			print("Attempting to remove file " + command[3:])
