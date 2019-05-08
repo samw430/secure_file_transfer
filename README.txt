@@ -1,11 +1,12 @@
 Must run network.py first 
 
 python3 network.py -p './network/' -a 'ABCDE' --clean
-python3 sender.py -p './network/' -a A
-python3 receiver.py -p './network/' -a B
+python3 server.py
+python3 client.py -l hello
+python3 client.py -a C -l hello
 
-To Do
-
-check if file is of length <= 50
-put message numbers on server decrypt in order
-if request file that doesn't exist, need to send message to client
+To make a new user:
+Initialize user's salt with salt_generator.py
+Uncomment line for initializing server_data in client code
+Login once
+Comment back out line for initializing server_data in client code
