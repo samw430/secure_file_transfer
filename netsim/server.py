@@ -7,6 +7,8 @@ from Crypto.Util import Counter, Padding
 from Crypto import Random
 import os
 
+#params: statefile string
+#return value: keys and sequence numbers from state file
 def read_state_file(statefile):
 
 	# read the content of the state file
@@ -27,22 +29,22 @@ def read_state_file(statefile):
 
 	return (enckey, mackey, sndsqn, rcvsqn)
 
+#params: msg as bytes object
+#return value: boolean whether session is initiated
 def initiate_session(msg):
-	#Potentially add a mac so get a longer key with PBKDF2
 
 	# parse the message
 	header = msg[:6]                    # header is 6 bytes long
 	nonce = msg[6:14]      # nonce is AES.block_size/2 bytes long
 	modulus = int.from_bytes(msg[14:2062], byteorder='big')
-	encrypted_e = msg[2062:]
+	encrypted_e = msg[2062:-32]
 	header_from = header[:1]         # from is encoded on 1 byte
 	header_type = header[1:2]           # type is encoded on 1 byte
 	header_sqn = header[2:6]            # msg sqn is encoded on 4 bytes
+	rcvmac = msg[-32:]
 
 	#Check that this is login message
 	if header_type != 0x00 and header_sqn != bytes(4):
-		print(header_type)
-		print(header_sqn)
 		print("Invalid login from", header_from)
 		return False
 
@@ -51,9 +53,20 @@ def initiate_session(msg):
 	pass_key = pass_file.read()
 	pass_file.close()
 
+	#initialize mac and update with msg
+	MAC = HMAC.new(pass_key, digestmod=SHA256)
+	MAC.update(msg[:-32])
+	mac = MAC.digest()
+
+	#check if potential attack occurred
+	if mac != rcvmac:
+		return False
+
+	#initiliaze new cipher
 	ctr = Counter.new(64, prefix=nonce, initial_value=0)
 	cipher_aes = AES.new(pass_key, AES.MODE_CTR, counter = ctr)
 
+	#decrypt exponent
 	plaintext_e = cipher_aes.decrypt(encrypted_e)
 	exponent = int.from_bytes(plaintext_e, byteorder = 'big')
 
@@ -61,8 +74,10 @@ def initiate_session(msg):
 	if exponent%2 ==0:
 		exponent = exponent-1
 
+	#make RSA cipher from modulus and exp as ints
 	rsa = RSA.construct((modulus, exponent))
 
+	#make and encrypt symmetric key for session
 	symettric_key = Random.get_random_bytes(32)
 
 	cipher = PKCS1_OAEP.new(rsa)
@@ -70,10 +85,17 @@ def initiate_session(msg):
 
 	zero = 0
 
+	#build packet
 	packet = OWN_ADDR.encode('utf-8') + zero.to_bytes(1, byteorder='big') + zero.to_bytes(4, byteorder='big') + encrypted_key
 
-	netif.send_msg(header_from.decode('utf-8'), packet)
+	#always use protection
+	MAC = HMAC.new(pass_key, digestmod=SHA256)
+	MAC.update(packet)
+	mac = MAC.digest()
 
+	netif.send_msg(header_from.decode('utf-8'), packet+mac)
+
+	#update state file
 	statefile = "./server_data/" + header_from.decode('utf-8') + "/state.txt"
 
 	enckey = symettric_key[:16]
@@ -93,6 +115,8 @@ def initiate_session(msg):
 
 	return True
 
+#params: filename as string, statefile as string, client_name as bytes object
+#return value: Pcket to send to client indicating they tried to download nonexistant file
 def download_error(filename, statefile, client_name):
 	tempfile = "./server_data/" + client_name + "/files/errorTemp"
 	ofile = open(tempfile, "wb+")
@@ -104,6 +128,8 @@ def download_error(filename, statefile, client_name):
 
 	return packet
 
+#params: filename as string, command as int, statefile as string, client_name as bytes
+#return value: encrypted message to send to client
 def encrypt(filename, command, statefile, client_name):
 
 	# read the content of the state file
@@ -118,10 +144,11 @@ def encrypt(filename, command, statefile, client_name):
 	payload = ifile.read()
 	ifile.close()
 
-	#get shortened filename back if encrypting file
+	#remove server metadata (removes path from filename)
 	if command == 3:
 		filename = filename[22:]
 
+	#builds header
 	server_address = "A"
 	header_from = server_address.encode('utf-8')
 	header_type = command.to_bytes(1,byteorder='big')
@@ -131,13 +158,13 @@ def encrypt(filename, command, statefile, client_name):
 	#filename will be first 50 bytes of encrypted
 	filename = filename.ljust(50).encode('utf-8')
 
+	#make new cipher to encrypt message
 	iv = Random.get_random_bytes(AES.block_size)
 	cipher = AES.new(enckey, AES.MODE_CBC, iv)
-	#might be problem because filename is bytes
-	#maybe use:
-	#str(int.from_bytes(filename, byteorder='big'))
+	
 	encrypted = cipher.encrypt(Padding.pad(filename+payload,AES.block_size))
 
+	#for #protection
 	MAC = HMAC.new(mackey, digestmod=SHA256)
 	MAC.update(header)
 	MAC.update(iv)
@@ -158,6 +185,8 @@ def encrypt(filename, command, statefile, client_name):
 
 	return message
 
+#params: msg as bytes, netif as network object
+#return value: boolean for session validity
 def decrypt(msg, netif):
 
 	# parse the message
@@ -169,7 +198,7 @@ def decrypt(msg, netif):
 	header_type = header[1:2]           # type is encoded on 1 byte
 	header_sqn = header[2:6]            # msg sqn is encoded on 4 bytes
 
-	# read the content of the receive state file
+	# read the content of the state file
 	statefile = "./server_data/" + header_from.decode('utf-8') + "/state.txt"
 	enckey, mackey, sndsqn, rcvsqn = read_state_file(statefile)
 
@@ -178,6 +207,7 @@ def decrypt(msg, netif):
 	header_sqn = int.from_bytes(header_sqn, byteorder='big')
 	if (rcvsqn >= header_sqn):
 		#This is a sign of a replay attack
+		print("Possible replay attack on " + header_from.decode("utf-8"))
 		return False
 
 	#verify mac
@@ -196,27 +226,30 @@ def decrypt(msg, netif):
 
 	#remove and check padding
 	if len(decrypted)>0:
-		print(len(decrypted))
 		try:
 			decrypted = Padding.unpad(decrypted,AES.block_size)
 		except ValueError:
-			#need to decide what we do here
+			#connection invalid
 			return False
 
 	#list files
 	if header_type == b'\x01':
+		#os call to get files
 		files = os.listdir("./server_data/" + header_from.decode('utf-8') + "/files/")
+		#parse files into string
 		fileString = ""
 		for file in files:
 			fileString = fileString + str(file) + '\n'
+		#make and send from temp file
 		tempfile = "./server_data/" + header_from.decode('utf-8') + "/files/lsTemp"
 		ofile = open(tempfile, "wb+")
 		ofile.write(fileString.encode('utf-8'))
 		ofile.close()
 		packet = encrypt(tempfile, 1, statefile, "")
-		#must increment sndsqn because otherwise it is reset to 1
+		#must increment sndsqn because otherwise it doesn't increment for encryption
 		sndsqn = sndsqn + 1
 		netif.send_msg(header_from.decode('utf-8'), packet)
+		#clean up temp file
 		os.remove(tempfile)
 		print(header_from.decode('utf-8'), "listed files")
 
@@ -225,6 +258,7 @@ def decrypt(msg, netif):
 		filename = decrypted[:50]		#filename is first 50 bytes
 		payload = decrypted[50:]
 
+		#write file to server storage
 		file = open("./server_data/" + header_from.decode('utf-8') + "/files/" + filename.decode('utf-8').rstrip(), "wb+")
 		file.write(payload)
 		file.close()
@@ -233,15 +267,16 @@ def decrypt(msg, netif):
 	elif header_type == b'\x03':
 		filename = decrypted[:50]
 		filename = './server_data/' + header_from.decode('utf-8') + '/files/' + filename.decode('utf-8').rstrip()
+		#get file contents and encrypt
 		packet = encrypt(filename, 3, statefile, header_from.decode('utf-8'))
-		#must increment sndsqn because otherwise it is reset to 1
+		#must increment sndsqn to account for encryption
 		sndsqn = sndsqn + 1
 		netif.send_msg(header_from.decode('utf-8'), packet)
 		print(header_from.decode('utf-8'), "requested", filename)
 	#remove file
 	elif header_type == b'\x04':
-		print("Here")
 		filename = decrypted[:50]		#filename is first 50 bytes
+		#if requested file exists, remove it
 		try:
 			os.remove("./server_data/" + header_from.decode('utf-8') + "/files/" + filename.decode('utf-8').rstrip())
 			print(header_from.decode('utf-8'), "deleted", filename.decode('utf-8'))
@@ -249,7 +284,7 @@ def decrypt(msg, netif):
 			print("User",header_from.decode('utf-8'),"tried to delete a file that doesn't exist")
 	#logout
 	elif header_type == b'\x05':
-		#Logout phase initiated
+		#update password hash to match client
 		new_hash = decrypted
 		hash_file = open("./server_data/" + header_from.decode('utf-8') + "/password_derived_hash.txt", 'wb')
 		hash_file.truncate()
@@ -302,6 +337,7 @@ if OWN_ADDR not in network_interface.addr_space:
 # main loop
 netif = network_interface(NET_PATH, OWN_ADDR)
 
+#stores dictionary of client name to boolean representing connection validity
 session_info = {}
 
 print('Server running...')

@@ -1,4 +1,4 @@
-enckey: f04fb9f01d8963b44e6c5a6c8e9077e7
-mackey: c58952ef69519c51ffac2c953400a871
-sndsqn: 1
-rcvsqn: 1
+enckey: 39a20088963ef942f409fbe74046f16c
+mackey: 9360017041a6f4fb1300cb67f8dc0496
+sndsqn: 6
+rcvsqn: 7
