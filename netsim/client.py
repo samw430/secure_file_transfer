@@ -220,7 +220,7 @@ def initialize_session(OWN_ADDR, netif, PASSWORD, statefile):
 	salt = get_salt(OWN_ADDR)
 	pass_based_key = PBKDF2(PASSWORD, salt, 16, 1000)
 	
-	#In testing if passwords get out of sync between server and client
+	#Line for intializing server_data
 	#open("./server_data/" + OWN_ADDR + "/password_derived_hash.txt", 'wb').write(pass_based_key)
 
 	#Generate RSA key 
