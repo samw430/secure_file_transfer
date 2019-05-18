@@ -45,7 +45,8 @@ def initiate_session(msg):
 
 	#Check that this is login message
 	if header_type != 0x00 and header_sqn != bytes(4):
-		print("Invalid login from", header_from)
+		print("Invalid login from", header_from.decode('utf-8'))
+		netif.send_msg(header_from.decode('utf-8'), session_invalid_error(header_from))
 		return False
 
 	#Get PBKDF2 key
@@ -128,6 +129,20 @@ def download_error(filename, statefile, client_name):
 
 	return packet
 
+#params: statefile as string, client_name as bytes object
+#return value: Pcket to send to client indicating that their session has been corrupted
+def session_invalid_error(client_name):
+	statefile = "./server_data/" + client_name.decode('utf-8') + "/state.txt"
+	tempfile = "./server_data/" + client_name.decode('utf-8') + "/files/errorTemp"
+	ofile = open(tempfile, "wb+")
+	errorString = "Session is invalid due to malicious activity"
+	ofile.write(errorString.encode('utf-8'))
+	ofile.close()
+	packet = encrypt(tempfile, 7, statefile, client_name)
+	os.remove(tempfile)	
+
+	return packet
+
 #params: filename as string, command as int, statefile as string, client_name as bytes
 #return value: encrypted message to send to client
 def encrypt(filename, command, statefile, client_name):
@@ -202,12 +217,12 @@ def decrypt(msg, netif):
 	statefile = "./server_data/" + header_from.decode('utf-8') + "/state.txt"
 	enckey, mackey, sndsqn, rcvsqn = read_state_file(statefile)
 
-
+	print("Decrypting packet from", header_from.decode('utf-8'))
 	# check the sequence number
 	header_sqn = int.from_bytes(header_sqn, byteorder='big')
 	if (rcvsqn >= header_sqn):
 		#This is a sign of a replay attack
-		print("Possible replay attack on " + header_from.decode("utf-8"))
+		print("Possible replay attack on " + header_from.decode('utf-8'))
 		return False
 
 	#verify mac
@@ -219,6 +234,7 @@ def decrypt(msg, netif):
 
 	if(comp_mac !=mac):
 		#This is a sign of tampering
+		print("MAC verification failed marking session invalid")
 		return False
 
 	ENC = AES.new(enckey, AES.MODE_CBC, iv)
@@ -230,6 +246,7 @@ def decrypt(msg, netif):
 			decrypted = Padding.unpad(decrypted,AES.block_size)
 		except ValueError:
 			#connection invalid
+			print("Padding error marking session invalid")
 			return False
 
 	#list files

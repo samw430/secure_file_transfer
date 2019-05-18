@@ -15,7 +15,8 @@ up      2
 down    3
 rm      4
 logout  5 
-error   6
+download error   6
+session error    7
 
 Passwords:
 B hello
@@ -196,9 +197,13 @@ def decrypt(msg, statefile):
 		f.write(payload)
 		f.close()
 		print("File Download")
-	#decrypt error message
+	#decrypt download error message
 	elif header_type == b'\x06':
 		print(decrypted[50:].decode('utf-8'))
+	#decrypt session error message
+	elif header_type == b'\x07':
+		print(decrypted[50:].decode('utf-8'))
+		exit()
 
 	# save state
 	state = "enckey: " + enckey.hex() + '\n'
