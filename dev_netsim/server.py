@@ -307,7 +307,7 @@ def decrypt(msg, netif):
 	#logout
 	elif header_type == b'\x05':
 		#update password hash to match client
-		new_hash = decrypted
+		new_hash = decrypted[50:]
 		hash_file = open("./server_data/" + header_from.decode('utf-8') + "/password_derived_hash.txt", 'wb')
 		hash_file.truncate()
 		hash_file.write(new_hash)

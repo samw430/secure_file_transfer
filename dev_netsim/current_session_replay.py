@@ -8,7 +8,6 @@ netif = network_interface(NET_PATH, 'B')
 
 files = os.listdir("./network/B/OUT/")
 sortedFiles = sorted(files)
-print(sortedFiles)
 
 filename = sortedFiles[len(sortedFiles)-1]
 packet = open("./network/B/OUT/" + filename, 'rb').read()
